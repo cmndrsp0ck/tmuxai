@@ -452,11 +452,31 @@ func (m *Manager) initMCP() {
 // Cleanup performs graceful shutdown of all managed resources.
 // It must be called when the Manager is no longer needed.
 func (m *Manager) Cleanup() {
+	m.autoSaveSession()
+
 	if m.McpManager != nil {
 		logger.Info("Shutting down MCP servers...")
 		m.McpManager.Shutdown()
 		m.McpManager = nil
 		m.McpRegistry = nil
+	}
+}
+
+// autoSaveSession persists the chat history on exit when enabled via
+// config (session.auto_save, on by default). Failures are logged but never
+// block shutdown, and an empty chat history is silently skipped.
+func (m *Manager) autoSaveSession() {
+	if m.Config == nil || !m.Config.Session.AutoSave || len(m.Messages) == 0 {
+		return
+	}
+
+	name := m.Config.Session.AutoSaveName
+	if name == "" {
+		name = defaultSessionName
+	}
+
+	if err := m.SaveSession(name); err != nil {
+		logger.Error("Failed to auto-save session: %v", err)
 	}
 }
 

@@ -35,6 +35,7 @@ type Config struct {
 	WebSearch             WebSearchConfig        `mapstructure:"web_search"`
 	WebFetch              WebFetchConfig         `mapstructure:"web_fetch"`
 	Theme                 ThemeConfig            `mapstructure:"theme"`
+	Session               SessionConfig          `mapstructure:"session"`
 }
 
 // ThemeConfig holds colors used to style the TUI (prompt, status messages,
@@ -184,6 +185,15 @@ type TmuxConfig struct {
 	ExecSplitArgs []string `mapstructure:"exec_split_args"`
 }
 
+// SessionConfig controls automatic saving of chat history to disk.
+type SessionConfig struct {
+	// AutoSave, when true, saves the chat history to AutoSaveName on exit
+	// (in addition to whatever the user saves manually via /save).
+	AutoSave bool `mapstructure:"auto_save"`
+	// AutoSaveName is the session name auto-save writes to.
+	AutoSaveName string `mapstructure:"auto_save_name"`
+}
+
 // DefaultConfig returns a configuration with default values
 func DefaultConfig() *Config {
 	return &Config{
@@ -249,6 +259,10 @@ func DefaultConfig() *Config {
 			AllowedRedirects: true,
 		},
 		Theme: DefaultThemeConfig(),
+		Session: SessionConfig{
+			AutoSave:     true,
+			AutoSaveName: "last",
+		},
 	}
 }
 
@@ -386,6 +400,17 @@ func GetKBDir() string {
 	_ = os.MkdirAll(kbDir, 0o755)
 
 	return kbDir
+}
+
+// GetSessionsDir returns the path to the saved-sessions directory
+func GetSessionsDir() string {
+	configDir, _ := GetConfigDir()
+	sessionsDir := filepath.Join(configDir, "sessions")
+
+	// Create sessions directory if it doesn't exist
+	_ = os.MkdirAll(sessionsDir, 0o755)
+
+	return sessionsDir
 }
 
 func TryInferType(key, value string) any {

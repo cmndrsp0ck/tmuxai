@@ -281,6 +281,17 @@ func (c *CLIInterface) newCompleter() *completion.CmdCompletionOrList2 {
 				}
 			}
 
+			// Handle /load subcommands
+			if len(field) > 0 && field[0] == "/load" {
+				if len(field) == 1 || (len(field) == 2 && !strings.HasSuffix(field[1], " ")) {
+					sessions, err := c.manager.ListSessions()
+					if err != nil || len(sessions) == 0 {
+						return nil, nil
+					}
+					return sessions, sessions
+				}
+			}
+
 			// Handle /model subcommands
 			if len(field) > 0 && field[0] == "/model" {
 				if len(field) == 1 || (len(field) == 2 && !strings.HasSuffix(field[1], " ")) {

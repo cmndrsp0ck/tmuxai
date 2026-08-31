@@ -22,6 +22,10 @@ const helpMessage = `Available commands:
 - /prepare: Prepare the pane for TmuxAI automation
 - /watch <prompt>: Start watch mode
 - /squash: Summarize the chat history
+- /save [name]: Save the chat history to disk (defaults to "last")
+- /load [name]: Load a previously saved chat history (defaults to "last")
+- /sessions: List saved chat sessions
+  (chat history also auto-saves to "last" on exit; disable with session.auto_save: false)
 - /model: List available models and show current model
 - /model <name>: Switch to a different model
 - /kb: List available knowledge bases
@@ -53,6 +57,9 @@ var commands = []string{
 	"/prepare",
 	"/config",
 	"/squash",
+	"/save",
+	"/load",
+	"/sessions",
 	"/model",
 	"/kb",
 	"/skill",
@@ -177,6 +184,47 @@ func (m *Manager) ProcessSubCommand(command string) {
 
 	case prefixMatch(commandPrefix, "/squash"):
 		m.squashHistory()
+		return
+
+	case prefixMatch(commandPrefix, "/save"):
+		name := defaultSessionName
+		if len(parts) > 1 {
+			name = parts[1]
+		}
+		if err := m.SaveSession(name); err != nil {
+			m.Println(fmt.Sprintf("Error saving session: %v", err))
+			return
+		}
+		m.Println(fmt.Sprintf("Session saved as %q", sanitizeSessionName(name)))
+		return
+
+	case prefixMatch(commandPrefix, "/load"):
+		name := defaultSessionName
+		if len(parts) > 1 {
+			name = parts[1]
+		}
+		if err := m.LoadSession(name); err != nil {
+			m.Println(fmt.Sprintf("Error loading session: %v", err))
+			return
+		}
+		m.Println(fmt.Sprintf("Session %q loaded (%d messages)", sanitizeSessionName(name), len(m.Messages)))
+		m.PrintChatHistory()
+		return
+
+	case prefixMatch(commandPrefix, "/sessions"):
+		sessions, err := m.ListSessions()
+		if err != nil {
+			m.Println(fmt.Sprintf("Error listing sessions: %v", err))
+			return
+		}
+		if len(sessions) == 0 {
+			m.Println("No saved sessions found in " + config.GetSessionsDir())
+			return
+		}
+		m.Println("Saved sessions:")
+		for _, name := range sessions {
+			m.Println("  " + name)
+		}
 		return
 
 	case prefixMatch(commandPrefix, "/watch") || commandPrefix == "/w":

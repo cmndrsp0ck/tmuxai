@@ -180,3 +180,22 @@ web_fetch:
   max_chars: 25000           # Char limit for /webfetch (direct URL fetch)
   timeout_seconds: 8
   allowed_redirects: false
+
+# TUI theme: colors for the input prompt, confirmations, countdowns, and
+# info panels (e.g. /info, /model). Each value is a standard ANSI color
+# number ("0"-"255", e.g. "2" = green) or a hex color (e.g. "#22c55e").
+# Defaults below match TmuxAI's built-in look.
+theme:
+  primary: "2"   # "TmuxAI" label at the start of the input prompt
+  accent: "3"    # "»" arrow at the end of the input prompt
+  model: "6"     # current model name shown in the prompt
+  state: "5"     # state badge in the prompt (running/waiting/done)
+  success: "2"   # success messages, "yes", low-risk command confirmations
+  warning: "3"   # warnings, unknown-risk command confirmations
+  error: "1"     # errors, high-risk command confirmations
+  neutral: "4"   # secondary/dim text, e.g. section rules
+  bold: true     # render the colors above in bold
+  # Background painted behind the whole input prompt line (a shade lighter
+  # than your terminal background reads as a distinct prompt "bar").
+  # Empty (default) uses the terminal's own background.
+  prompt_background: ""  # e.g. "#2a2a3d"

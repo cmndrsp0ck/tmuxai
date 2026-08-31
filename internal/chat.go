@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/alvinunreal/tmuxai/config"
+	"github.com/alvinunreal/tmuxai/system"
 	"github.com/nyaosorg/go-readline-ny"
 	"github.com/nyaosorg/go-readline-ny/completion"
 	"github.com/nyaosorg/go-readline-ny/keys"
@@ -61,6 +62,13 @@ func (c *CLIInterface) Start(initMessage string) error {
 		},
 		History:        history,
 		HistoryCycling: true,
+	}
+
+	// Extend the prompt's background color across the text the user types,
+	// not just the "TmuxAI » " label itself.
+	if bgSeq := system.BackgroundSequence(c.manager.Config.Theme.PromptBackground); bgSeq != "" {
+		editor.DefaultColor = bgSeq
+		editor.ResetColor = "\x1b[0m"
 	}
 
 	// Bind TAB key to completion

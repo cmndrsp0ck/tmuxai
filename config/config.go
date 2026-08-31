@@ -34,6 +34,39 @@ type Config struct {
 	KnowledgeBase         KnowledgeBaseConfig    `mapstructure:"knowledge_base"`
 	WebSearch             WebSearchConfig        `mapstructure:"web_search"`
 	WebFetch              WebFetchConfig         `mapstructure:"web_fetch"`
+	Theme                 ThemeConfig            `mapstructure:"theme"`
+}
+
+// ThemeConfig holds colors used to style the TUI (prompt, status messages,
+// info panels, confirmations, etc.). Values may be a standard ANSI color
+// number ("0"-"255") or a hex color ("#RRGGBB"); anything lipgloss.Color
+// accepts is valid here.
+type ThemeConfig struct {
+	// Primary colors the "TmuxAI" label shown at the start of the input prompt.
+	Primary string `mapstructure:"primary"`
+	// Accent colors the "»" arrow at the end of the input prompt.
+	Accent string `mapstructure:"accent"`
+	// Model colors the current model name shown in the prompt.
+	Model string `mapstructure:"model"`
+	// State colors the state badge (e.g. running/waiting/done) in the prompt.
+	State string `mapstructure:"state"`
+	// Success colors success messages, "yes"/true values, and low-risk indicators.
+	Success string `mapstructure:"success"`
+	// Warning colors warnings and unknown-risk indicators.
+	Warning string `mapstructure:"warning"`
+	// Error colors errors and high-risk (danger) indicators.
+	Error string `mapstructure:"error"`
+	// Neutral colors secondary/dim text, such as section rules.
+	Neutral string `mapstructure:"neutral"`
+	// Bold controls whether the colors above are rendered bold, matching the
+	// look of the previous fatih/color-based theme.
+	Bold bool `mapstructure:"bold"`
+	// PromptBackground, if set, paints a background color behind the entire
+	// input prompt line (e.g. a shade lighter than the terminal background,
+	// to make the prompt read as its own bar). Empty means no background,
+	// i.e. the terminal's default. Accepts the same ANSI number / hex values
+	// as the colors above.
+	PromptBackground string `mapstructure:"prompt_background"`
 }
 
 // OpenRouterConfig holds OpenRouter API configuration
@@ -215,6 +248,25 @@ func DefaultConfig() *Config {
 			TimeoutSeconds:   8,
 			AllowedRedirects: true,
 		},
+		Theme: DefaultThemeConfig(),
+	}
+}
+
+// DefaultThemeConfig returns the default TUI color theme. Colors are
+// standard ANSI numbers chosen to match TmuxAI's original fatih/color look.
+func DefaultThemeConfig() ThemeConfig {
+	return ThemeConfig{
+		Primary: "2", // green
+		Accent:  "3", // yellow
+		Model:   "6", // cyan
+		State:   "5", // magenta
+		Success: "2", // green
+		Warning: "3", // yellow
+		Error:   "1", // red
+		Neutral: "4", // blue
+		Bold:    true,
+		// No background by default; the prompt uses the terminal's own background.
+		PromptBackground: "",
 	}
 }
 

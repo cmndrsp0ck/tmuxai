@@ -5,14 +5,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alvinunreal/tmuxai/system"
 	"github.com/eiannone/keyboard"
-	"github.com/fatih/color"
 )
 
 func (m *Manager) Countdown(seconds int) {
-	highlightColor := color.New(color.FgYellow, color.Bold).SprintFunc()
-	dimColor := color.New(color.FgBlue).SprintFunc()
-	pauseColor := color.New(color.FgRed, color.Bold).SprintFunc()
+	theme := system.NewTheme(m.Config.Theme)
+	highlightColor := theme.Warning.Sprint
+	dimColor := theme.Neutral.Sprint
+	pauseColor := theme.Error.Sprint
 
 	// Set up keyboard
 	if err := keyboard.Open(); err != nil {

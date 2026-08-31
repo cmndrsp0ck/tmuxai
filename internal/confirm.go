@@ -12,7 +12,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/fatih/color"
+	"github.com/alvinunreal/tmuxai/system"
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
@@ -23,23 +23,24 @@ func (m *Manager) confirmedToExecFn(command string, prompt string, edit bool) (b
 		return true, command
 	}
 
-	promptColor := color.New(color.FgCyan, color.Bold)
+	theme := system.NewTheme(m.Config.Theme)
+	promptColor := theme.Model
 
 	// Score the command for risk assessment
 	assessment := ScoreCommand(command)
 
 	// Determine color and icon based on risk level
-	var riskColor *color.Color
+	var riskColor system.Style
 	var riskIcon string
 	switch assessment.Level {
 	case RiskDanger:
-		riskColor = color.New(color.FgRed, color.Bold)
+		riskColor = theme.Error
 		riskIcon = "!"
 	case RiskUnknown:
-		riskColor = color.New(color.FgYellow, color.Bold)
+		riskColor = theme.Warning
 		riskIcon = "?"
 	default: // RiskSafe
-		riskColor = color.New(color.FgGreen, color.Bold)
+		riskColor = theme.Success
 		riskIcon = "✓"
 	}
 

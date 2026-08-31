@@ -4,29 +4,37 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fatih/color"
+	"github.com/alvinunreal/tmuxai/config"
 )
 
 // InfoFormatter provides consistent formatting for TmuxAI information displays
 type InfoFormatter struct {
 	// Color schemes
-	HeaderColor  *color.Color
-	LabelColor   *color.Color
-	SuccessColor *color.Color
-	WarningColor *color.Color
-	ErrorColor   *color.Color
-	NeutralColor *color.Color
+	HeaderColor  Style
+	LabelColor   Style
+	SuccessColor Style
+	WarningColor Style
+	ErrorColor   Style
+	NeutralColor Style
+	falseColor   Style
 }
 
-// NewInfoFormatter creates a new formatter with default color schemes
+// NewInfoFormatter creates a new formatter using TmuxAI's default color theme.
 func NewInfoFormatter() *InfoFormatter {
+	return NewInfoFormatterFromTheme(config.DefaultThemeConfig())
+}
+
+// NewInfoFormatterFromTheme creates a new formatter using the given theme
+// config, e.g. the user's loaded cfg.Theme.
+func NewInfoFormatterFromTheme(theme config.ThemeConfig) *InfoFormatter {
 	return &InfoFormatter{
-		HeaderColor:  color.New(color.FgCyan, color.Bold),
-		LabelColor:   color.New(color.FgBlue, color.Bold),
-		SuccessColor: color.New(color.FgGreen, color.Bold),
-		WarningColor: color.New(color.FgYellow, color.Bold),
-		ErrorColor:   color.New(color.FgRed, color.Bold),
-		NeutralColor: color.New(color.FgBlue),
+		HeaderColor:  NewStyle(theme.Model, true),
+		LabelColor:   NewStyle(theme.Neutral, true),
+		SuccessColor: NewStyle(theme.Success, true),
+		WarningColor: NewStyle(theme.Warning, true),
+		ErrorColor:   NewStyle(theme.Error, true),
+		NeutralColor: NewStyle(theme.Neutral, false),
+		falseColor:   NewStyle(theme.State, false),
 	}
 }
 
@@ -58,7 +66,7 @@ func (f *InfoFormatter) FormatProgressBar(percent float64, width int) string {
 	var bar string
 
 	// Choose color based on percentage
-	var barColor *color.Color
+	var barColor Style
 	switch {
 	case percent >= 90:
 		barColor = f.ErrorColor
@@ -86,5 +94,5 @@ func (f *InfoFormatter) FormatBool(value bool) string {
 	if value {
 		return f.SuccessColor.Sprint("yes")
 	}
-	return color.New(color.FgMagenta).Sprint("no")
+	return f.falseColor.Sprint("no")
 }

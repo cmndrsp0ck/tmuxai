@@ -10,7 +10,6 @@ import (
 	"github.com/alvinunreal/tmuxai/internal/mcp"
 	"github.com/alvinunreal/tmuxai/logger"
 	"github.com/alvinunreal/tmuxai/system"
-	"github.com/fatih/color"
 )
 
 type AIResponse struct {
@@ -171,10 +170,13 @@ func (m *Manager) GetPrompt() string {
 		return m.renderPromptTemplate(template)
 	}
 
-	tmuxaiColor := color.New(color.FgGreen, color.Bold)
-	arrowColor := color.New(color.FgYellow, color.Bold)
-	stateColor := color.New(color.FgMagenta, color.Bold)
-	modelColor := color.New(color.FgCyan, color.Bold)
+	theme := system.NewTheme(m.Config.Theme)
+	bg := m.Config.Theme.PromptBackground
+	tmuxaiColor := theme.Primary.OnBackground(bg)
+	arrowColor := theme.Accent.OnBackground(bg)
+	stateColor := theme.State.OnBackground(bg)
+	modelColor := theme.Model.OnBackground(bg)
+	fill := system.NewStyle("", false).OnBackground(bg)
 
 	var stateSymbol string
 	switch m.Status {
@@ -205,21 +207,23 @@ func (m *Manager) GetPrompt() string {
 
 		// Show model if current is different from expected
 		if currentModel != "" && currentModel != expectedModel {
-			prompt += " " + modelColor.Sprint("["+currentModel+"]")
+			prompt += fill.Sprint(" ") + modelColor.Sprint("["+currentModel+"]")
 		}
 	}
 
 	if stateSymbol != "" {
-		prompt += " " + stateColor.Sprint("["+stateSymbol+"]")
+		prompt += fill.Sprint(" ") + stateColor.Sprint("["+stateSymbol+"]")
 	}
 	prompt += arrowColor.Sprint(" » ")
 	return prompt
 }
 
 func (m *Manager) renderPromptTemplate(template string) string {
-	tmuxaiColor := color.New(color.FgGreen, color.Bold)
-	stateColor := color.New(color.FgMagenta, color.Bold)
-	modelColor := color.New(color.FgCyan, color.Bold)
+	theme := system.NewTheme(m.Config.Theme)
+	bg := m.Config.Theme.PromptBackground
+	tmuxaiColor := theme.Primary.OnBackground(bg)
+	stateColor := theme.State.OnBackground(bg)
+	modelColor := theme.Model.OnBackground(bg)
 
 	replacements := map[string]string{}
 

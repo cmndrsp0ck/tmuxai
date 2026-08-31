@@ -677,7 +677,7 @@ func prefixMatch(command, target string) bool {
 
 // formats system information and tmux details into a readable string
 func (m *Manager) formatInfo() {
-	formatter := system.NewInfoFormatter()
+	formatter := system.NewInfoFormatterFromTheme(m.Config.Theme)
 	const labelWidth = 18 // Width of the label column
 	formatLine := func(key string, value any) {
 		fmt.Print(formatter.LabelColor.Sprintf("%-*s", labelWidth, key))
@@ -789,7 +789,7 @@ func (m *Manager) formatInfo() {
 
 // listModels displays available models and highlights the current one
 func (m *Manager) listModels() {
-	formatter := system.NewInfoFormatter()
+	formatter := system.NewInfoFormatterFromTheme(m.Config.Theme)
 
 	// Get current model configuration
 	currentModelConfig, _ := m.GetCurrentModelConfig()

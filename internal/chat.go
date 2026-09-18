@@ -1,21 +1,14 @@
 package internal
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strings"
 	"time"
 
 	"github.com/alvinunreal/tmuxai/config"
-	"github.com/alvinunreal/tmuxai/system"
-	"github.com/nyaosorg/go-readline-ny"
-	"github.com/nyaosorg/go-readline-ny/completion"
-	"github.com/nyaosorg/go-readline-ny/keys"
 	"github.com/nyaosorg/go-readline-ny/simplehistory"
 )
 
@@ -55,32 +48,8 @@ func (c *CLIInterface) Start(initMessage string) error {
 		}
 	}
 
-	// Initialize editor
-	editor := &readline.Editor{
-		PromptWriter: func(w io.Writer) (int, error) {
-			return io.WriteString(w, c.manager.GetPrompt())
-		},
-		History:        history,
-		HistoryCycling: true,
-	}
-
-	// Extend the prompt's background color across the text the user types,
-	// not just the "TmuxAI » " label itself.
-	if bgSeq := system.BackgroundSequence(c.manager.Config.Theme.PromptBackground); bgSeq != "" {
-		editor.DefaultColor = bgSeq
-		editor.ResetColor = "\x1b[0m"
-	}
-
-	// Bind TAB key to completion
-	editor.BindKey(keys.CtrlI, c.newCompleter())
-
-	// Bind Ctrl+O and Alt+E to open current prompt in external editor
-	editorCmd := &readline.GoCommand{
-		Name: "EDIT_IN_EDITOR",
-		Func: cmdEditInEditor,
-	}
-	editor.BindKey(keys.CtrlO, editorCmd)
-	editor.BindKey(keys.AltE, editorCmd)
+	candidates := c.newCompleter()
+	bg := c.manager.Config.Theme.PromptBackground
 
 	if initMessage != "" {
 		fmt.Printf("%s%s\n", c.manager.GetPrompt(), initMessage)
@@ -90,17 +59,19 @@ func (c *CLIInterface) Start(initMessage string) error {
 	ctx := context.Background()
 
 	for {
-		line, err := editor.ReadLine(ctx)
+		line, err := readPromptLine(ctx, c.manager.GetPrompt(), history, candidates, bg)
 
-		if err == readline.CtrlC {
-			// Ctrl+C pressed, clear the line and continue
-			continue
-		} else if err == io.EOF {
+		if err == errEOF {
 			// Ctrl+D pressed, exit
 			return nil
 		} else if err != nil {
 			return err
 		}
+
+		// readPromptLine's Bubble Tea program clears its own rendering on
+		// exit, so echo the submitted line into the scrollback ourselves,
+		// the same way an initMessage is echoed above.
+		fmt.Printf("%s%s\n", c.manager.GetPrompt(), line)
 
 		// Save history
 		if line != "" {
@@ -136,58 +107,6 @@ func (c *CLIInterface) printWelcomeMessage() {
 	fmt.Println()
 	fmt.Println("Type '/help' for a list of commands, '/exit' to quit")
 	fmt.Println()
-}
-
-// startEditor opens the given text in an external editor and returns the edited result
-func startEditor(source string) (string, error) {
-	textEditor := os.Getenv("EDITOR")
-	if textEditor == "" {
-		textEditor = "vim"
-	}
-
-	fd, err := os.CreateTemp("", "tmuxai-prompt-*.txt")
-	if err != nil {
-		return source, err
-	}
-	fname := fd.Name()
-	defer func() { _ = os.Remove(fname) }()
-
-	if _, err := io.WriteString(fd, source); err != nil {
-		_ = fd.Close()
-		return source, err
-	}
-	if err := fd.Close(); err != nil {
-		return source, err
-	}
-
-	cmd := exec.Command(textEditor, fname)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return source, err
-	}
-
-	update, err := os.ReadFile(fname)
-	if err != nil {
-		return source, err
-	}
-	update = bytes.TrimSuffix(update, []byte{'\n'})
-	update = bytes.TrimSuffix(update, []byte{'\r'})
-	return string(update), nil
-}
-
-// cmdEditInEditor is a readline command that opens the current buffer in an external editor
-func cmdEditInEditor(ctx context.Context, B *readline.Buffer) readline.Result {
-	result, err := startEditor(B.String())
-	if err != nil {
-		return readline.CONTINUE
-	}
-	B.Buffer = B.Buffer[:0]
-	B.InsertString(0, result)
-	B.Cursor = len(B.Buffer)
-	B.RepaintAll()
-	return readline.CONTINUE
 }
 
 func (c *CLIInterface) processInput(input string) {
@@ -229,123 +148,119 @@ func (c *CLIInterface) processInput(input string) {
 }
 
 // newCompleter creates a completion handler for command completion
-func (c *CLIInterface) newCompleter() *completion.CmdCompletionOrList2 {
-	return &completion.CmdCompletionOrList2{
-		Delimiter: " ",
-		Postfix:   " ",
-		Candidates: func(field []string) (forComp []string, forList []string) {
-			// Handle top-level commands
-			if len(field) == 0 || (len(field) == 1 && !strings.HasSuffix(field[0], " ")) {
-				return commands, commands
-			}
+func (c *CLIInterface) newCompleter() candidatesFunc {
+	return func(field []string) (forComp []string, forList []string) {
+		// Handle top-level commands
+		if len(field) == 0 || (len(field) == 1 && !strings.HasSuffix(field[0], " ")) {
+			return commands, commands
+		}
 
-			// Handle /config subcommands
-			if len(field) > 0 && field[0] == "/config" {
-				if len(field) == 1 || (len(field) == 2 && !strings.HasSuffix(field[1], " ")) {
-					return []string{"set", "get"}, []string{"set", "get"}
-				} else if len(field) == 2 || (len(field) == 3 && !strings.HasSuffix(field[2], " ")) {
-					return AllowedConfigKeys, AllowedConfigKeys
+		// Handle /config subcommands
+		if len(field) > 0 && field[0] == "/config" {
+			if len(field) == 1 || (len(field) == 2 && !strings.HasSuffix(field[1], " ")) {
+				return []string{"set", "get"}, []string{"set", "get"}
+			} else if len(field) == 2 || (len(field) == 3 && !strings.HasSuffix(field[2], " ")) {
+				return AllowedConfigKeys, AllowedConfigKeys
+			}
+		}
+
+		// Handle /prepare subcommands
+		if len(field) > 0 && field[0] == "/prepare" {
+			if len(field) == 1 || (len(field) == 2 && !strings.HasSuffix(field[1], " ")) {
+				return []string{"bash", "zsh", "fish"}, []string{"bash", "zsh", "fish"}
+			}
+		}
+
+		// Handle /kb subcommands
+		if len(field) > 0 && field[0] == "/kb" {
+			if len(field) == 1 || (len(field) == 2 && !strings.HasSuffix(field[1], " ")) {
+				return []string{"list", "load", "unload"}, []string{"list", "load", "unload"}
+			} else if (len(field) == 2 && field[1] == "load") || (len(field) >= 3 && field[1] == "load") {
+				// Get available knowledge bases for completion
+				kbs, err := c.manager.listKBs()
+				if err != nil {
+					return nil, nil
 				}
-			}
-
-			// Handle /prepare subcommands
-			if len(field) > 0 && field[0] == "/prepare" {
-				if len(field) == 1 || (len(field) == 2 && !strings.HasSuffix(field[1], " ")) {
-					return []string{"bash", "zsh", "fish"}, []string{"bash", "zsh", "fish"}
+				// Disable autocompletion when there's only one KB, bug with readline
+				if len(kbs) == 1 {
+					return nil, nil
 				}
-			}
-
-			// Handle /kb subcommands
-			if len(field) > 0 && field[0] == "/kb" {
-				if len(field) == 1 || (len(field) == 2 && !strings.HasSuffix(field[1], " ")) {
-					return []string{"list", "load", "unload"}, []string{"list", "load", "unload"}
-				} else if (len(field) == 2 && field[1] == "load") || (len(field) >= 3 && field[1] == "load") {
-					// Get available knowledge bases for completion
-					kbs, err := c.manager.listKBs()
-					if err != nil {
-						return nil, nil
-					}
-					// Disable autocompletion when there's only one KB, bug with readline
-					if len(kbs) == 1 {
-						return nil, nil
-					}
-					return kbs, kbs
-				} else if (len(field) == 2 && field[1] == "unload") || (len(field) >= 3 && field[1] == "unload") {
-					// For unload, show loaded knowledge bases and --all option
-					var kbNames []string
-					for name := range c.manager.LoadedKBs {
-						kbNames = append(kbNames, name)
-					}
-					kbNames = append(kbNames, "--all")
-					return kbNames, kbNames
+				return kbs, kbs
+			} else if (len(field) == 2 && field[1] == "unload") || (len(field) >= 3 && field[1] == "unload") {
+				// For unload, show loaded knowledge bases and --all option
+				var kbNames []string
+				for name := range c.manager.LoadedKBs {
+					kbNames = append(kbNames, name)
 				}
+				kbNames = append(kbNames, "--all")
+				return kbNames, kbNames
 			}
+		}
 
-			// Handle /load subcommands
-			if len(field) > 0 && field[0] == "/load" {
-				if len(field) == 1 || (len(field) == 2 && !strings.HasSuffix(field[1], " ")) {
-					sessions, err := c.manager.ListSessions()
-					if err != nil || len(sessions) == 0 {
-						return nil, nil
-					}
-					return sessions, sessions
+		// Handle /load subcommands
+		if len(field) > 0 && field[0] == "/load" {
+			if len(field) == 1 || (len(field) == 2 && !strings.HasSuffix(field[1], " ")) {
+				sessions, err := c.manager.ListSessions()
+				if err != nil || len(sessions) == 0 {
+					return nil, nil
 				}
+				return sessions, sessions
 			}
+		}
 
-			// Handle /model subcommands
-			if len(field) > 0 && field[0] == "/model" {
-				if len(field) == 1 || (len(field) == 2 && !strings.HasSuffix(field[1], " ")) {
-					// Return available models for completion
-					availableModels := c.manager.GetAvailableModels()
-					if len(availableModels) == 0 {
-						return nil, nil
-					}
-					// Disable autocompletion when there's only one model, bug with readline
-					if len(availableModels) == 1 {
-						return nil, nil
-					}
-					return availableModels, availableModels
+		// Handle /model subcommands
+		if len(field) > 0 && field[0] == "/model" {
+			if len(field) == 1 || (len(field) == 2 && !strings.HasSuffix(field[1], " ")) {
+				// Return available models for completion
+				availableModels := c.manager.GetAvailableModels()
+				if len(availableModels) == 0 {
+					return nil, nil
 				}
+				// Disable autocompletion when there's only one model, bug with readline
+				if len(availableModels) == 1 {
+					return nil, nil
+				}
+				return availableModels, availableModels
 			}
+		}
 
-			// Handle /skill subcommands
-			if len(field) > 0 && field[0] == "/skill" {
-				if len(field) == 1 || (len(field) == 2 && !strings.HasSuffix(field[1], " ")) {
-					return []string{"list ", "load ", "unload ", "info ", "validate "}, []string{"list ", "load ", "unload ", "info ", "validate "}
-				} else if len(field) >= 2 && field[1] == "load" {
-					// Complete with skill names
-					if c.manager.Skills != nil {
-						var skillNames []string
-						for name := range c.manager.Skills.Skills {
-							skillNames = append(skillNames, name)
-						}
-						return skillNames, skillNames
+		// Handle /skill subcommands
+		if len(field) > 0 && field[0] == "/skill" {
+			if len(field) == 1 || (len(field) == 2 && !strings.HasSuffix(field[1], " ")) {
+				return []string{"list ", "load ", "unload ", "info ", "validate "}, []string{"list ", "load ", "unload ", "info ", "validate "}
+			} else if len(field) >= 2 && field[1] == "load" {
+				// Complete with skill names
+				if c.manager.Skills != nil {
+					var skillNames []string
+					for name := range c.manager.Skills.Skills {
+						skillNames = append(skillNames, name)
 					}
-				} else if len(field) >= 2 && field[1] == "info" {
-					// Complete with skill names
-					if c.manager.Skills != nil {
-						var skillNames []string
-						for name := range c.manager.Skills.Skills {
-							skillNames = append(skillNames, name)
-						}
-						return skillNames, skillNames
+					return skillNames, skillNames
+				}
+			} else if len(field) >= 2 && field[1] == "info" {
+				// Complete with skill names
+				if c.manager.Skills != nil {
+					var skillNames []string
+					for name := range c.manager.Skills.Skills {
+						skillNames = append(skillNames, name)
 					}
-				} else if len(field) >= 2 && field[1] == "unload" {
-					// Complete with loaded skill names and --all
-					var unloadTargets []string
-					unloadTargets = append(unloadTargets, "--all ")
-					if c.manager.Skills != nil {
-						for name, skill := range c.manager.Skills.Skills {
-							if skill.Loaded {
-								unloadTargets = append(unloadTargets, name+" ")
-							}
+					return skillNames, skillNames
+				}
+			} else if len(field) >= 2 && field[1] == "unload" {
+				// Complete with loaded skill names and --all
+				var unloadTargets []string
+				unloadTargets = append(unloadTargets, "--all ")
+				if c.manager.Skills != nil {
+					for name, skill := range c.manager.Skills.Skills {
+						if skill.Loaded {
+							unloadTargets = append(unloadTargets, name+" ")
 						}
 					}
-					return unloadTargets, unloadTargets
 				}
+				return unloadTargets, unloadTargets
 			}
+		}
 
-			return nil, nil
-		},
+		return nil, nil
 	}
 }

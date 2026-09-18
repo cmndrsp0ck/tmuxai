@@ -22,7 +22,7 @@ func pressKey(m promptInputModel, keyType tea.KeyType) promptInputModel {
 }
 
 func TestPromptInputSubmit(t *testing.T) {
-	m := newPromptInputModel("» ", simplehistory.New(), nil, "")
+	m := newPromptInputModel("» ", simplehistory.New(), nil, "", 20)
 	m.ta.SetWidth(80)
 	m = typeText(m, "hello world")
 	m = pressKey(m, tea.KeyEnter)
@@ -36,7 +36,7 @@ func TestPromptInputSubmit(t *testing.T) {
 }
 
 func TestPromptInputCtrlDOnEmptyLineSignalsEOF(t *testing.T) {
-	m := newPromptInputModel("» ", simplehistory.New(), nil, "")
+	m := newPromptInputModel("» ", simplehistory.New(), nil, "", 20)
 	m.ta.SetWidth(80)
 	m = pressKey(m, tea.KeyCtrlD)
 
@@ -46,7 +46,7 @@ func TestPromptInputCtrlDOnEmptyLineSignalsEOF(t *testing.T) {
 }
 
 func TestPromptInputCtrlDWithTextDoesNotExit(t *testing.T) {
-	m := newPromptInputModel("» ", simplehistory.New(), nil, "")
+	m := newPromptInputModel("» ", simplehistory.New(), nil, "", 20)
 	m.ta.SetWidth(80)
 	m = typeText(m, "abc")
 	m = pressKey(m, tea.KeyCtrlD)
@@ -56,8 +56,27 @@ func TestPromptInputCtrlDWithTextDoesNotExit(t *testing.T) {
 	}
 }
 
+func TestPromptInputAltEnterInsertsNewlineInsteadOfSubmitting(t *testing.T) {
+	m := newPromptInputModel("» ", simplehistory.New(), nil, "", 20)
+	m.ta.SetWidth(80)
+	m = typeText(m, "first line")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	m = updated.(promptInputModel)
+	m = typeText(m, "second line")
+
+	if m.submitted {
+		t.Fatalf("alt+enter must not submit the line")
+	}
+	if got, want := m.ta.Value(), "first line\nsecond line"; got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+	if got := m.ta.LineCount(); got != 2 {
+		t.Fatalf("expected 2 logical lines, got %d", got)
+	}
+}
+
 func TestPromptInputCtrlCClearsLine(t *testing.T) {
-	m := newPromptInputModel("» ", simplehistory.New(), nil, "")
+	m := newPromptInputModel("» ", simplehistory.New(), nil, "", 20)
 	m.ta.SetWidth(80)
 	m = typeText(m, "some text")
 	m = pressKey(m, tea.KeyCtrlC)
@@ -75,7 +94,7 @@ func TestPromptInputHistoryNavigation(t *testing.T) {
 	history.Add("first command")
 	history.Add("second command")
 
-	m := newPromptInputModel("» ", history, nil, "")
+	m := newPromptInputModel("» ", history, nil, "", 20)
 	m.ta.SetWidth(80)
 	m = typeText(m, "draft in progress")
 
@@ -110,7 +129,7 @@ func TestPromptInputTabCompletionSingleMatch(t *testing.T) {
 	candidates := func(fields []string) ([]string, []string) {
 		return []string{"/help"}, []string{"/help"}
 	}
-	m := newPromptInputModel("» ", simplehistory.New(), candidates, "")
+	m := newPromptInputModel("» ", simplehistory.New(), candidates, "", 20)
 	m.ta.SetWidth(80)
 	m = typeText(m, "/hel")
 	m = pressKey(m, tea.KeyTab)
@@ -124,7 +143,7 @@ func TestPromptInputTabCompletionMultipleMatchesShowsList(t *testing.T) {
 	candidates := func(fields []string) ([]string, []string) {
 		return []string{"/help", "/history"}, []string{"/help", "/history"}
 	}
-	m := newPromptInputModel("» ", simplehistory.New(), candidates, "")
+	m := newPromptInputModel("» ", simplehistory.New(), candidates, "", 20)
 	m.ta.SetWidth(80)
 	m = typeText(m, "/h")
 	m = pressKey(m, tea.KeyTab)
@@ -138,7 +157,7 @@ func TestPromptInputTabCompletionMultipleMatchesShowsList(t *testing.T) {
 }
 
 func TestPromptInputWrapsLongLinesInsteadOfScrolling(t *testing.T) {
-	m := newPromptInputModel("» ", simplehistory.New(), nil, "")
+	m := newPromptInputModel("» ", simplehistory.New(), nil, "", 20)
 	m.ta.SetWidth(20)
 
 	m = typeText(m, strings.Repeat("word ", 20))
@@ -148,6 +167,129 @@ func TestPromptInputWrapsLongLinesInsteadOfScrolling(t *testing.T) {
 	}
 	if got := m.ta.LineInfo().Height; got <= 1 {
 		t.Fatalf("expected the long line to visually wrap across multiple rows, got height %d", got)
+	}
+}
+
+func TestPromptInputSignalsGrowWhenContentExceedsHeight(t *testing.T) {
+	// Starting at promptInputStartHeight (2 rows), typing a line that wraps
+	// to more than 2 rows must not resize the running program's textarea
+	// (that desyncs Bubble Tea's renderer - see the comment on
+	// wantedHeight); it must instead ask to be relaunched taller.
+	m := newPromptInputModel("» ", simplehistory.New(), nil, "", promptInputStartHeight)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 20, Height: 20})
+	m = updated.(promptInputModel)
+
+	m = typeText(m, strings.Repeat("word ", 20))
+
+	if !m.needsResize {
+		t.Fatalf("expected needsResize once wrapped content exceeds the fixed height")
+	}
+	if m.resizeTo <= m.height {
+		t.Fatalf("expected resizeTo (%d) to exceed the original height (%d)", m.resizeTo, m.height)
+	}
+	if m.submitted || m.eof {
+		t.Fatalf("a resize request must not also look like submit or EOF")
+	}
+}
+
+func TestPromptInputShrinksWhenContentNoLongerNeedsTheHeight(t *testing.T) {
+	m := newPromptInputModel("» ", simplehistory.New(), nil, "", promptInputStartHeight)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 20, Height: 20})
+	m = updated.(promptInputModel)
+
+	m = typeText(m, strings.Repeat("word ", 20))
+	if !m.needsResize || m.resizeTo <= promptInputStartHeight {
+		t.Fatalf("test setup: expected the long line to have grown the height first")
+	}
+	grownHeight := m.resizeTo
+
+	// Simulate readPromptLine relaunching at the grown height, then the
+	// user deleting most of the text back down.
+	m2 := newPromptInputModel("» ", simplehistory.New(), nil, "", grownHeight)
+	updated, _ = m2.Update(tea.WindowSizeMsg{Width: 20, Height: 20})
+	m2 = updated.(promptInputModel)
+	m2.ta.SetValue("word ")
+	m2.ta.CursorEnd()
+
+	updated, _ = m2.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	m2 = updated.(promptInputModel)
+
+	if !m2.needsResize {
+		t.Fatalf("expected needsResize once content shrinks below the current height")
+	}
+	if m2.resizeTo >= grownHeight {
+		t.Fatalf("expected resizeTo (%d) to shrink below the grown height (%d)", m2.resizeTo, grownHeight)
+	}
+	if m2.resizeTo < promptInputStartHeight {
+		t.Fatalf("expected resizeTo (%d) to never shrink below the start height (%d)", m2.resizeTo, promptInputStartHeight)
+	}
+}
+
+func TestPromptInputDoesNotResizeWithinItsHeight(t *testing.T) {
+	m := newPromptInputModel("» ", simplehistory.New(), nil, "", promptInputStartHeight)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	m = updated.(promptInputModel)
+
+	m = typeText(m, "short message")
+
+	if m.needsResize {
+		t.Fatalf("did not expect a resize request for content that fits the starting height")
+	}
+}
+
+func TestPromptInputCollapsesLargePastes(t *testing.T) {
+	m := newPromptInputModel("» ", simplehistory.New(), nil, "", 20)
+	m.ta.SetWidth(80)
+
+	pasted := strings.Repeat("line\n", 121) + "line" // 122 lines
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(pasted), Paste: true})
+	m = updated.(promptInputModel)
+
+	got := m.ta.Value()
+	if strings.Contains(got, "line\nline") {
+		t.Fatalf("expected the raw pasted text to be collapsed, got %q", got)
+	}
+	if !strings.Contains(got, "[Pasted text #1 +122 lines]") {
+		t.Fatalf("expected a collapsed-paste placeholder, got %q", got)
+	}
+	if len(m.pastes) != 1 {
+		t.Fatalf("expected exactly one tracked paste, got %d", len(m.pastes))
+	}
+
+	expanded := expandPastes(got, m.pastes)
+	if expanded != pasted {
+		t.Fatalf("expected expandPastes to restore the original text, got %q", expanded)
+	}
+}
+
+func TestPromptInputCollapsesLargePastesWithCarriageReturnLineEndings(t *testing.T) {
+	// Terminals (confirmed via tmux paste-buffer) report line breaks within
+	// a bracketed paste as \r, not \n - the same byte Enter itself sends.
+	m := newPromptInputModel("» ", simplehistory.New(), nil, "", 20)
+	m.ta.SetWidth(80)
+
+	pasted := strings.Repeat("line\r", 121) + "line"
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(pasted), Paste: true})
+	m = updated.(promptInputModel)
+
+	if !strings.Contains(m.ta.Value(), "[Pasted text #1 +122 lines]") {
+		t.Fatalf("expected \\r-delimited pastes to be counted and collapsed, got %q", m.ta.Value())
+	}
+}
+
+func TestPromptInputDoesNotCollapseSmallPastes(t *testing.T) {
+	m := newPromptInputModel("» ", simplehistory.New(), nil, "", 20)
+	m.ta.SetWidth(80)
+
+	pasted := "line one\nline two\nline three"
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(pasted), Paste: true})
+	m = updated.(promptInputModel)
+
+	if got := m.ta.Value(); got != pasted {
+		t.Fatalf("expected a short paste to be inserted verbatim, got %q", got)
+	}
+	if len(m.pastes) != 0 {
+		t.Fatalf("did not expect a short paste to be tracked, got %v", m.pastes)
 	}
 }
 

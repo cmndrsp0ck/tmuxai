@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/exec"
 	"strings"
@@ -42,32 +43,77 @@ type promptInputModel struct {
 	completionList []string
 	editorFile     string
 
+	// pastes maps a collapsed-paste placeholder (the literal text inserted
+	// into the buffer) to the full text it stands in for, so the real
+	// content can be substituted back in right before the message is
+	// processed. See collapsePaste.
+	pastes       map[string]string
+	pasteCounter int
+
 	submitted bool
 	value     string
 	eof       bool
+
+	// height is this run's fixed viewport height (see the comment on
+	// wantedHeight for why it must never change mid-run). needsResize/
+	// resizeTo signal that handleMsg quit the program to be relaunched at
+	// a different height, rather than a real submit/EOF/error.
+	height      int
+	needsResize bool
+	resizeTo    int
 }
 
 type editorFinishedMsg struct{ err error }
 
-// promptInputHeight is the fixed number of rows the input viewport shows.
+// promptInputStartHeight is the viewport height a fresh input starts at.
+const promptInputStartHeight = 2
+
+// pasteCollapseThreshold is the number of lines a single paste can contain
+// before it's collapsed to a placeholder instead of being inserted in full;
+// see collapsePaste.
+const pasteCollapseThreshold = 6
+
 // Bubble Tea's default renderer diffs frames by line count: it moves the
 // cursor up by the previous frame's row count, then rewrites. If the
-// textarea's rendered height changes between two Updates of the same
+// textarea's rendered height changes between two Updates of the *same*
 // running Program, and the terminal has to scroll to make room for the
 // extra rows, that scroll isn't reflected in the renderer's bookkeeping and
 // every following frame is drawn at the wrong offset, silently clobbering
-// already-typed text. Keeping the height constant for the life of the
-// Program avoids that entirely; input longer than this degrades to the
-// textarea's own cursor-following internal scroll instead of corrupting
-// the display.
-const promptInputHeight = 6
+// already-typed text. A fresh Program's first frame doesn't have this
+// problem (there's no prior offset to invalidate), so instead of resizing
+// the textarea in place, wantedHeight is used to quit the current Program
+// and readPromptLine relaunches a new one at the right height - taller or
+// shorter - carrying the in-progress text (and reclaiming the old
+// Program's reserved rows first, so nothing is left behind) across the
+// restart.
+func wantedHeight(ta textarea.Model) int {
+	for ta.Line() > 0 {
+		ta.CursorUp()
+	}
+	lastLine := ta.LineCount() - 1
+	total := 0
+	for {
+		total += ta.LineInfo().Height
+		if ta.Line() >= lastLine {
+			break
+		}
+		cur := ta.Line()
+		for ta.Line() == cur {
+			ta.CursorDown()
+		}
+	}
+	if total < promptInputStartHeight {
+		total = promptInputStartHeight
+	}
+	return total
+}
 
-func newPromptInputModel(promptText string, history *simplehistory.Container, candidates candidatesFunc, bg string) promptInputModel {
+func newPromptInputModel(promptText string, history *simplehistory.Container, candidates candidatesFunc, bg string, height int) promptInputModel {
 	ta := textarea.New()
 	ta.Placeholder = ""
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
-	ta.SetHeight(promptInputHeight)
+	ta.SetHeight(height)
 	ta.EndOfBufferCharacter = ' '
 
 	promptWidth := lipgloss.Width(promptText)
@@ -96,6 +142,7 @@ func newPromptInputModel(promptText string, history *simplehistory.Container, ca
 		history:     history,
 		historyPos:  history.Len(),
 		candidates:  candidates,
+		height:      height,
 	}
 }
 
@@ -104,7 +151,18 @@ func (m promptInputModel) Init() tea.Cmd {
 }
 
 func (m promptInputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	return m.handleMsg(msg)
+	model, cmd := m.handleMsg(msg)
+
+	// Submit/EOF already asked to quit for their own reasons; don't
+	// second-guess them with a resize-restart.
+	if !model.submitted && !model.eof {
+		if needed := wantedHeight(model.ta); needed != model.height {
+			model.needsResize = true
+			model.resizeTo = needed
+			return model, tea.Quit
+		}
+	}
+	return model, cmd
 }
 
 func (m promptInputModel) handleMsg(msg tea.Msg) (promptInputModel, tea.Cmd) {
@@ -128,15 +186,30 @@ func (m promptInputModel) handleMsg(msg tea.Msg) (promptInputModel, tea.Cmd) {
 	case tea.KeyMsg:
 		m.completionList = nil
 
+		if msg.Paste {
+			m.ta.InsertString(m.collapsePaste(string(msg.Runes)))
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "enter":
 			m.submitted = true
 			m.value = m.ta.Value()
 			return m, tea.Quit
 
+		case "alt+enter":
+			// Bubble Tea can't tell shift+enter apart from plain enter (no
+			// Shift modifier without the Kitty keyboard protocol, which
+			// this version doesn't support), so alt+enter is the
+			// insert-a-literal-newline binding instead.
+			m.ta.InsertRune('\n')
+			return m, nil
+
 		case "ctrl+c":
 			m.ta.SetValue("")
 			m.historyPos = m.history.Len()
+			m.pastes = nil
+			m.pasteCounter = 0
 			return m, nil
 
 		case "ctrl+d":
@@ -225,6 +298,48 @@ func (m *promptInputModel) historyNext() {
 // behavior as go-readline-ny's completion.Complete, but operates on the
 // plain buffer text and only completes at the end of the input (tab
 // completion is only ever invoked while typing forward).
+// collapsePaste replaces a large paste with a short placeholder so it
+// doesn't blow up the input box (or the terminal scrollback once the line
+// is echoed). Short pastes are returned unchanged. The mapping from
+// placeholder to original text is kept on the model and substituted back in
+// by expandPastes right before the message is actually processed.
+func (m *promptInputModel) collapsePaste(text string) string {
+	// Terminals report line breaks within a bracketed paste as \r, not \n
+	// (matching how Enter itself is reported); normalize before counting
+	// or inserting so both the threshold check and the textarea's own
+	// line-splitting see real newlines.
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+
+	lines := strings.Count(text, "\n") + 1
+	if lines <= pasteCollapseThreshold {
+		return text
+	}
+
+	m.pasteCounter++
+	id := randomPasteID()
+	placeholder := fmt.Sprintf("<pasted_content id=%q>\n[Pasted text #%d +%d lines]\n</pasted_content id=%q>", id, m.pasteCounter, lines, id)
+
+	if m.pastes == nil {
+		m.pastes = make(map[string]string)
+	}
+	m.pastes[placeholder] = text
+	return placeholder
+}
+
+// expandPastes substitutes every collapsed-paste placeholder in text back
+// with the full content it stands in for.
+func expandPastes(text string, pastes map[string]string) string {
+	for placeholder, full := range pastes {
+		text = strings.ReplaceAll(text, placeholder, full)
+	}
+	return text
+}
+
+func randomPasteID() string {
+	return fmt.Sprintf("%04x", rand.Intn(1<<16))
+}
+
 func (m *promptInputModel) completeAtCursor() {
 	if m.candidates == nil {
 		return
@@ -331,34 +446,66 @@ func readTempPromptFile(fname string) (string, error) {
 // (which may be soft-wrapped across multiple terminal rows) of input,
 // reusing history, tab-completion and the external-editor shortcut. It runs
 // inline (no alt screen) so prior chat history stays visible while
-// composing; see growHeight for why it may transparently relaunch itself at
-// a taller fixed height as the input grows.
-func readPromptLine(ctx context.Context, promptText string, history *simplehistory.Container, candidates candidatesFunc, bg string) (string, error) {
-	model := newPromptInputModel(promptText, history, candidates, bg)
+// composing; see wantedHeight for why it may transparently relaunch itself
+// at a taller or shorter fixed height as the input grows or shrinks.
+//
+// It returns the submitted line as typed (with any large pastes collapsed
+// to a placeholder - see collapsePaste) alongside a pastes map the caller
+// should pass to expandPastes right before handing the message to the AI.
+// The collapsed form is what should be echoed and saved to history, so a
+// large paste doesn't flood the scrollback or the history file.
+func readPromptLine(ctx context.Context, promptText string, history *simplehistory.Container, candidates candidatesFunc, bg string) (string, map[string]string, error) {
+	height := promptInputStartHeight
+	seed := ""
+	historyPos := history.Len()
+	draft := ""
+	var pastes map[string]string
+	pasteCounter := 0
 
-	p := tea.NewProgram(model, tea.WithContext(ctx), tea.WithOutput(os.Stdout), tea.WithInput(os.Stdin))
-	finalModel, err := p.Run()
-	if err != nil {
-		return "", err
-	}
+	for {
+		model := newPromptInputModel(promptText, history, candidates, bg, height)
+		model.ta.SetValue(seed)
+		model.ta.CursorEnd()
+		model.historyPos = historyPos
+		model.draft = draft
+		model.pastes = pastes
+		model.pasteCounter = pasteCounter
 
-	// Bubble Tea's inline renderer only erases the single row the cursor
-	// ends up on when the Program stops; the other promptInputHeight-1
-	// reserved rows (blank padding, or stale wrapped-text rows from before
-	// the final keystroke) are left on screen. Reclaim that whole block
-	// ourselves so the caller can print a single clean line in its place.
-	if promptInputHeight > 1 {
-		fmt.Fprintf(os.Stdout, "\x1b[%dA\x1b[J", promptInputHeight-1)
-	}
+		p := tea.NewProgram(model, tea.WithContext(ctx), tea.WithOutput(os.Stdout), tea.WithInput(os.Stdin))
+		finalModel, err := p.Run()
+		if err != nil {
+			return "", nil, err
+		}
 
-	m := finalModel.(promptInputModel)
-	if m.eof {
-		return "", errEOF
+		// Bubble Tea's inline renderer only erases the single row the
+		// cursor ends up on when the Program stops; the other height-1
+		// reserved rows (blank padding, or stale wrapped-text rows from
+		// before the final keystroke) are left on screen. Reclaim that
+		// whole block ourselves, whether we're about to relaunch at a
+		// different height or hand back to the caller to print a single
+		// clean line in its place.
+		if height > 1 {
+			fmt.Fprintf(os.Stdout, "\x1b[%dA\x1b[J", height-1)
+		}
+
+		m := finalModel.(promptInputModel)
+		if m.needsResize {
+			height = m.resizeTo
+			seed = m.ta.Value()
+			historyPos = m.historyPos
+			draft = m.draft
+			pastes = m.pastes
+			pasteCounter = m.pasteCounter
+			continue
+		}
+		if m.eof {
+			return "", nil, errEOF
+		}
+		if !m.submitted {
+			return "", nil, ctx.Err()
+		}
+		return m.value, m.pastes, nil
 	}
-	if !m.submitted {
-		return "", ctx.Err()
-	}
-	return m.value, nil
 }
 
 // --- completion helpers, ported from go-readline-ny's completion package to

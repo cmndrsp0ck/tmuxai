@@ -53,13 +53,13 @@ func (c *CLIInterface) Start(initMessage string) error {
 
 	if initMessage != "" {
 		fmt.Printf("%s%s\n", c.manager.GetPrompt(), initMessage)
-		c.processInput(initMessage)
+		c.processInput(initMessage, nil)
 	}
 
 	ctx := context.Background()
 
 	for {
-		line, err := readPromptLine(ctx, c.manager.GetPrompt(), history, candidates, bg)
+		line, pastes, err := readPromptLine(ctx, c.manager.GetPrompt(), history, candidates, bg)
 
 		if err == errEOF {
 			// Ctrl+D pressed, exit
@@ -98,7 +98,7 @@ func (c *CLIInterface) Start(initMessage string) error {
 			continue
 		}
 
-		c.processInput(input)
+		c.processInput(input, pastes)
 	}
 }
 
@@ -109,11 +109,18 @@ func (c *CLIInterface) printWelcomeMessage() {
 	fmt.Println()
 }
 
-func (c *CLIInterface) processInput(input string) {
+// processInput processes a submitted line. pastes maps any collapsed-paste
+// placeholders in input back to their full text (see collapsePaste) - it's
+// expanded here, right before the AI sees the message, so the scrollback
+// echo and history keep showing the compact placeholder while the model
+// still gets the real pasted content.
+func (c *CLIInterface) processInput(input string, pastes map[string]string) {
 	if c.manager.IsMessageSubcommand(input) {
 		c.manager.ProcessSubCommand(input)
 		return
 	}
+
+	input = expandPastes(input, pastes)
 
 	// Set up signal handling for Ctrl+C
 	sigChan := make(chan os.Signal, 1)
